@@ -120,7 +120,8 @@ class OTPVerificationRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     id: int
     password: str
-
+class Spending_Request(BaseModel):
+    id: int
 def get_db():
     db = SessionLocal()
     try:
@@ -345,7 +346,7 @@ def submit_financial_data(data: UserFinancialData, db: Session = Depends(get_db)
             "lifestyle": data.lifestyle.dict(),
             "financial_goals": data.financial_goals.dict()} }
 #Get method
-DB_PATH = "ryze__api_db"
+DB_PATH = "ryze_api_db"
 iso_forest = IsolationForest()
 
 MODEL_PATH = "E:\\RYZE_API\\model\\isolation_forest.pkl"
@@ -454,11 +455,12 @@ def analyze_spending(user_data):
                         "Personal Care": f"Personal care expenses are ${user_data['Personal_Care']}.",
                         "Education": f"Education costs amount to ${user_data['Education']}.", }}}}}
 
-@app.get("/predict_spending_behavior/{user_id}")
-def predict_spending_behavior(user_id: int, db: Session = Depends(get_db)):
+@app.get("/predict_spending_behavior")
+def predict_spending_behavior(request: Spending_Request, db: Session = Depends(get_db)):
     try:
-        user_data = fetch_user_data(user_id, db)
+        user_data = fetch_user_data(request.user_id, db)
         result = analyze_spending(user_data)
+        result["user_id"] = request.user_id
         return result
     except HTTPException as http_exc:
         raise http_exc
