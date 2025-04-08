@@ -1,8 +1,8 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException,Body
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Float, Boolean, String, Integer, ForeignKey
-from sqlalchemy.orm import sessionmaker, Session, declarative_base, relationship 
-from typing import Optional
+from sqlalchemy import create_engine, Column, Float, Boolean, String, Integer, ForeignKey,DateTime
+from sqlalchemy.orm import sessionmaker, Session, declarative_base, relationship ,joinedload
+from typing import Optional,Dict ,List
 import pandas as pd,pickle ,urllib.parse,os ,requests,bcrypt, jwt
 from sqlalchemy.exc import SQLAlchemyError
 from sklearn.ensemble import IsolationForest
@@ -39,7 +39,10 @@ class User(Base):
     loan_details = relationship("LoanDetailsDB", back_populates="user", cascade="all, delete-orphan")
     lifestyle = relationship("LifestyleDB", back_populates="user", uselist=False)
     financial_goals = relationship("FinancialGoalsDB", back_populates="user", uselist=False)
-
+    # created & update time
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    #########
 class ExpensesDB(Base):
     __tablename__ = "expenses"
     
@@ -60,7 +63,6 @@ class ExpensesDB(Base):
 
     user = relationship("User", back_populates="expenses")
     
-
 class LoanDetailsDB(Base):
     __tablename__ = "loan_details"
     
@@ -122,6 +124,9 @@ class ResetPasswordRequest(BaseModel):
     password: str
 class Spending_Request(BaseModel):
     id: int
+class UserProfileRequest(BaseModel):
+    user_id: int
+    
 def get_db():
     db = SessionLocal()
     try:
@@ -188,8 +193,8 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
         "country_code": "",
         "mobile":user.mobile,
         "image": " ",
-        "updated_at": "2025-03-26 18:14:03",
-        "created_at": "2025-03-26 18:14:03",
+        "updated_at": str(user.updated_at) if user.updated_at else "",
+        "created_at": str(user.created_at) if user.created_at else "",
         "device_id": "null",
         "status": "ACTIVE",
         "country": "",
@@ -238,8 +243,8 @@ def verify_otp(request: OTPVerificationRequest, db: Session = Depends(get_db)):
         "mobile":user.mobile,
         "image": " ",
         "image": "",
-        "updated_at": "2025-03-26 18:25:04",
-        "created_at": "2025-03-26 18:19:29",
+        "updated_at": str(user.updated_at) if user.updated_at else "",
+        "created_at": str(user.created_at) if user.created_at else "",
         "device_id": "null",
         "status": "ACTIVE",
         "country": "",
@@ -268,8 +273,8 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
         "country_code": "",
         "mobile":user.mobile,
         "image": "",
-        "updated_at": "2025-03-26 19:33:45",
-        "created_at": "2025-03-26 18:19:29",
+        "updated_at": str(user.updated_at) if user.updated_at else "",
+        "created_at": str(user.created_at) if user.created_at else "",
         "device_id": "null",
         # "status": "ACTIVE",
         "country": "",
@@ -466,6 +471,123 @@ def predict_spending_behavior(request: Spending_Request, db: Session = Depends(g
         raise http_exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@app.post("/View_Profile")
+def view_profile(request: UserProfileRequest = Body(...), db: Session = Depends(get_db)):
+    user = db.query(User).options(joinedload(User.expenses),joinedload(User.loan_details),
+        joinedload(User.lifestyle),joinedload(User.financial_goals)).filter(User.id == request.user_id).first()
+    if not user:
+        return {"status": "0", "message": "User not found", "result": {}}
+    return { "status": "1","message": "User profile fetched successfully",
+        "result": {
+            "user_name": user.user_name,
+            "email": user.email,
+            "mobile": user.mobile,
+            "created_at": str(user.created_at),
+            "updated_at": str(user.updated_at),
+            "expenses": [filter_out_id(e.__dict__) for e in user.expenses],
+            "loan_details": [filter_out_id(l.__dict__) for l in user.loan_details],
+            "lifestyle": filter_out_id(user.lifestyle.__dict__) if user.lifestyle else {},
+            "financial_goals": filter_out_id(user.financial_goals.__dict__) if user.financial_goals else {}}}
+def filter_out_id(data: dict) -> dict:
+    return {k: v for k, v in data.items() if k != "id" and not k.startswith("_sa_")}
+
+class EditProfileRequest(BaseModel):
+    user_id: int
+    user_name: Optional[str] = None
+    email: Optional[str] = None
+    mobile: Optional[str] = None
+    expenses: Optional[List[Expenses]] = None
+    loan_details: Optional[List[LoanDetails]] = None
+    lifestyle: Optional[Lifestyle] = None
+    financial_goals: Optional[FinancialGoals] = None
+
+@app.post("/Edit_profile")
+def edit_profile(request: EditProfileRequest = Body(...), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        return {"status": "0", "message": "User not found"}
+    # Update basic user info
+    if request.user_name:
+        user.user_name = request.user_name
+    if request.email:
+        user.email = request.email
+    if request.mobile:
+        user.mobile = request.mobile
+    # Replace old expenses with new
+    if request.expenses is not None:
+        db.query(ExpensesDB).filter(ExpensesDB.user_id == user.id).delete()
+        for exp in request.expenses:
+            db.add(ExpensesDB(user_id=user.id, **exp.dict()))
+    #  Replace old loan details with new
+    if request.loan_details is not None:
+        db.query(LoanDetailsDB).filter(LoanDetailsDB.user_id == user.id).delete()
+        for loan in request.loan_details:
+            db.add(LoanDetailsDB(user_id=user.id, **loan.dict()))
+    # Update or create lifestyle
+    if request.lifestyle:
+        if user.lifestyle:
+            for key, value in request.lifestyle.dict().items():
+                setattr(user.lifestyle, key, value)
+        else:
+            db.add(LifestyleDB(user_id=user.id, **request.lifestyle.dict()))
+    # Update or create financial goals
+    if request.financial_goals:
+        if user.financial_goals:
+            for key, value in request.financial_goals.dict().items():
+                setattr(user.financial_goals, key, value)
+        else:
+            db.add(FinancialGoalsDB(user_id=user.id, **request.financial_goals.dict()))
+    db.commit()
+
+    return {"status": "1", "message": "User profile updated successfully"}
+# DashBoard api 
+class DashboardResponse(BaseModel):
+    income: float
+    total_spending: float
+    spending_percentage: float
+    expenses_breakdown: Dict[str, float]
+    loan_details: Optional[LoanDetails]
+    lifestyle: Optional[Lifestyle]
+    financial_goals: Optional[FinancialGoals]
+
+@app.post("/dashboard")
+def get_user_dashboard(request=DashboardResponse,db: Session = Depends(get_db),
+    current_user: User = Depends(get_db)):
+    # Get expenses
+    expense_record = db.query(ExpensesDB).filter(ExpensesDB.user_id == request.id).first()
+    if not expense_record:
+        raise HTTPException(status_code=404, detail="User expenses not found")
+    # Calculate total spending and breakdown
+    expense_fields = [
+        "rent", "groceries", "transportation", "healthcare", "dining_out",
+        "shopping", "personal_care", "education", "electricity", "water", "insurance"]
+    
+    expenses_breakdown: Dict[str, float] = {}
+    total_spending = 0
+
+    for field in expense_fields:
+        value = getattr(expense_record, field) or 0
+        expenses_breakdown[field] = value
+        total_spending += value
+
+    income = expense_record.income or 0
+    spending_percentage = round((total_spending / income) * 100, 2) if income > 0 else 0
+    # Get loan details
+    loan_record = db.query(LoanDetailsDB).filter(LoanDetailsDB.user_id == current_user.id).first()
+    # Get lifestyle
+    lifestyle_record = db.query(LifestyleDB).filter(LifestyleDB.user_id == current_user.id).first()
+    # Get financial goals
+    goals_record = db.query(FinancialGoalsDB).filter(FinancialGoalsDB.user_id == current_user.id).first()
+
+    return DashboardResponse(
+        income=income,
+        total_spending=total_spending,
+        spending_percentage=spending_percentage,
+        expenses_breakdown=expenses_breakdown,
+        loan_details=loan_record,
+        lifestyle=lifestyle_record,
+        financial_goals=goals_record)
 # #END Get
 if __name__ == "__main__":
     import uvicorn
