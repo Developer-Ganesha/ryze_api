@@ -1,16 +1,15 @@
-from fastapi import FastAPI, Depends, HTTPException,Body
-from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Float, Boolean, String, Integer, ForeignKey,DateTime
+from fastapi import FastAPI, Depends, HTTPException,Body,status ,Form,UploadFile ,File
+from pydantic import BaseModel ,ConfigDict
+from sqlalchemy import create_engine, Column, Float, Boolean, String, Integer, ForeignKey,DateTime ,Date
 from sqlalchemy.orm import sessionmaker, Session, declarative_base, relationship ,joinedload
 from typing import Optional,Dict ,List
-import pandas as pd,pickle ,urllib.parse,os ,requests,bcrypt, jwt
+import pandas as pd,pickle ,urllib.parse,os ,requests,bcrypt, jwt,psycopg2 ,shutil,json
 from sqlalchemy.exc import SQLAlchemyError
 from sklearn.ensemble import IsolationForest
-from datetime import datetime, timedelta
-import psycopg2 
+from datetime import datetime, timedelta ,date
+from fastapi.staticfiles import StaticFiles
 from psycopg2.extras import DictCursor
 app = FastAPI()
-
 
 username = "postgres"
 password = 'RGS@123'
@@ -19,14 +18,15 @@ DB_URL = f"postgresql://{username}:{encoded_password}@localhost:5432/ryze_api_db
 engine = create_engine(DB_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
+MEDIA_DIR = "media"
+os.makedirs(MEDIA_DIR, exist_ok=True)
+app.mount("/media", StaticFiles(directory="media"), name="media")
 SECRET_KEY = "your_secret_key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 class User(Base):
     __tablename__ = "users"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_name = Column(String)  
     email = Column(String, unique=True, nullable=False) 
@@ -34,6 +34,7 @@ class User(Base):
     mobile = Column(String, nullable=False)
     otp = Column(String, nullable=True)
     otp_expiration = Column(String, nullable=True)
+    profile_image = Column(String, nullable=True)
     # Relationships
     expenses = relationship("ExpensesDB", back_populates="user", cascade="all,delete-orphan")
     loan_details = relationship("LoanDetailsDB", back_populates="user", cascade="all, delete-orphan")
@@ -42,10 +43,9 @@ class User(Base):
     # created & update time
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    #########
+    #####
 class ExpensesDB(Base):
-    __tablename__ = "expenses"
-    
+    __tablename__ = "expenses"  
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     income = Column(Float)
@@ -60,12 +60,10 @@ class ExpensesDB(Base):
     electricity = Column(Float)
     water = Column(Float)
     insurance = Column(Float)
-
     user = relationship("User", back_populates="expenses")
-    
+    #
 class LoanDetailsDB(Base):
     __tablename__ = "loan_details"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     loan_exists = Column(Boolean)
@@ -73,29 +71,26 @@ class LoanDetailsDB(Base):
     monthly_payment = Column(Float, nullable=True)
     loan_term = Column(Integer, nullable=True)
     interest_rate = Column(Float, nullable=True)
-
+    amount = Column(Float)
+    interest_rate = Column(Float)
     user = relationship("User", back_populates="loan_details")
-
+#
 class LifestyleDB(Base):
     __tablename__ = "lifestyle"
-    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     smoke = Column(Boolean)
     dine_out_frequency = Column(String)
     sports_hobbies = Column(String)
-
     user = relationship("User", back_populates="lifestyle")
-
+#
 class FinancialGoalsDB(Base):
-    __tablename__ = "financial_goals"
-    
+    __tablename__ = "financial_goals"    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     goal = Column(String)
-
     user = relationship("User", back_populates="financial_goals")
-
+#
 Base.metadata.create_all(bind=engine) 
 
 class UserCreate(BaseModel):
@@ -103,22 +98,17 @@ class UserCreate(BaseModel):
     email: str
     password: str
     mobile: str
-
 class LoginRequest(BaseModel):
     email: str
     password: str
-    
 class OTPRequest(BaseModel):
     mobile: str
     otp: str        
-
 class ForgotPasswordRequest(BaseModel):
     mobile: str
-
 class OTPVerificationRequest(BaseModel):
     mobile: str
     otp: str
-
 class ResetPasswordRequest(BaseModel):
     id: int
     password: str
@@ -126,20 +116,18 @@ class Spending_Request(BaseModel):
     id: int
 class UserProfileRequest(BaseModel):
     user_id: int
-    
+#    
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
+#
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
-
 def create_access_token(data: dict, expires_delta: timedelta):
     to_encode = data.copy()
     expire = datetime.utcnow() + expires_delta
@@ -149,66 +137,32 @@ def create_access_token(data: dict, expires_delta: timedelta):
 @app.post("/Register")
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == user.email).first():
-        return {
-            "status": "0",
-            "message": "User Email already exists",
-            "result": {} }
+        return { "status": "0","message": "User Email already exists","result": {} }
     if db.query(User).filter(User.mobile == user.mobile).first():
-        return {
-            "status": "0",
-            "message": "Mobile number already registered",
-            "result": {}}
+        return {"status": "0","message": "Mobile number already registered","result": {}}
     hashed_password = hash_password(user.password)
-    db_user = User(
-        user_name=user.user_name,
-        email=user.email,
-        password=hashed_password,
-        mobile=user.mobile
-    )
+    db_user = User( user_name=user.user_name,email=user.email,password=hashed_password,mobile=user.mobile )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    return {
-        "status": "1",
-        "message": "User registered successfully!",
-        "id": db_user.id
-    }
+    return {"status": "1", "message": "User registered successfully!",  "id": db_user.id}
 @app.post("/Login")
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     email = request.email.strip()
     user = db.query(User).filter(User.email == email).first() 
     if not user or not verify_password(request.password, user.password):
-        return {"status": "0", "message": "Invalid credentials",
-                "result": {}}
+        return {"status": "0", "message": "Invalid credentials", "result": {}}
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    return {
-    "status": "1",
-    "message": "Login successful",
-    "result": {
-        "id": user.id,
-        "user_name": user.user_name,
-        "email": user.email,
-        "password": user.password,
-        "type": "User",
-        "country_code": "",
-        "mobile":user.mobile,
-        "image": " ",
+    return {"status": "1","message": "Login successful",
+            "result": {"id": user.id,"user_name": user.user_name,"email": user.email,"password": user.password,
+        "type": "User","country_code": "","mobile":user.mobile,"image": " ",
         "updated_at": str(user.updated_at) if user.updated_at else "",
-        "created_at": str(user.created_at) if user.created_at else "",
-        "device_id": "null",
-        "status": "ACTIVE",
-        "country": "",
-        "otp": "",
-        "city": "",
-        "district": "",
-        "qr_image": "",
-        "qr_code": "",
-        "point": "0",
-        "token": access_token}}
+        "created_at": str(user.created_at) if user.created_at else "", "device_id": "null",
+        "status": "ACTIVE","country": "", "otp": "","city": "","district": "","qr_image": "",
+        "qr_code": "","point": "0", "token": access_token}}
 def send_otp(mobile: str, otp: str) -> bool:
     print(f"Sending OTP to {mobile}: {otp}")
     return True 
-
 @app.post("/forgot-password")
 def forgot_password( request: ForgotPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.mobile ==request.mobile).first() 
@@ -220,10 +174,7 @@ def forgot_password( request: ForgotPasswordRequest, db: Session = Depends(get_d
     user.otp_expiration = otp_expiration
     db.commit()
     if send_otp(user.mobile, otp):
-        return {
-            "status": "1",
-            "message": f"OTP sent to {user.mobile}",
-            "result": {"otp": otp} }
+        return {"status": "1", "message": f"OTP sent to {user.mobile}", "result": {"otp": otp} }
     return {"status": "0", "message": "Failed to send OTP", "result": {}}
 
 @app.post("/verify-otp")
@@ -231,29 +182,13 @@ def verify_otp(request: OTPVerificationRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.mobile == request.mobile).first() 
     if not user or user.otp != request.otp:
         return {"status": "0", "message": "Invalid mobile number or OTP","results":{}}
-    return { "status": "1",
-    "message": "Otp Verify",
-    "result": {
-        "id": user.id,
-        "user_name": user.user_name,
-        "email": user.email,
-        "password": user.password,
-        "type": "User",
-        "country_code": "",
-        "mobile":user.mobile,
-        "image": " ",
-        "image": "",
+    return { "status": "1","message": "Otp Verify",
+    "result": {"id": user.id, "user_name": user.user_name, "email": user.email,"password": user.password,
+        "type": "User", "country_code": "","mobile":user.mobile,"image": " ", "image": "",
         "updated_at": str(user.updated_at) if user.updated_at else "",
         "created_at": str(user.created_at) if user.created_at else "",
-        "device_id": "null",
-        "status": "ACTIVE",
-        "country": "",
-        "otp": "9999",
-        "city": "",
-        "district": "",
-        "qr_image": "",
-        "qr_code": "",
-        "point": "0"}}
+        "device_id": "null","status": "ACTIVE","country": "","otp": "9999",  "city": "","district": "",
+        "qr_image": "","qr_code": "","point": "0"}}
 
 @app.post("/update-password")
 def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
@@ -262,29 +197,13 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
         return {"Status": "0", "Message": "User not found","result":{}}
     user.password = hash_password(request.password)
     db.commit()
-    return { "status":"1",
-            "message": " Succesfully",
-    "user_data": {
-         "id": user.id,
-        "user_name": user.user_name,
-        "email": user.email,
-        "password": user.password,
-        "type": "User",
-        "country_code": "",
-        "mobile":user.mobile,
-        "image": "",
+    return { "status":"1","message": " Succesfully",
+    "user_data": {"id": user.id, "user_name": user.user_name,"email": user.email,"password": user.password,"type": "User",
+        "country_code": "","mobile":user.mobile,"image": "",
         "updated_at": str(user.updated_at) if user.updated_at else "",
         "created_at": str(user.created_at) if user.created_at else "",
-        "device_id": "null",
-        # "status": "ACTIVE",
-        "country": "",
-        "otp": "9999",
-        "city": "",
-        "district": "",
-        "qr_image": "",
-        "qr_code": "",
-        "point": "0"},
-    "status": "1"}
+        "device_id": "null",# "status": "ACTIVE",
+        "country": "","otp": "9999","city": "", "district": "","qr_image": "", "qr_code": "",  "point": "0"},"status": "1"}
     
 @app.delete("/users/{user_id}")
 def delete_user(user_id: int, db: Session = Depends(get_db)):
@@ -308,25 +227,30 @@ class Expenses(BaseModel):
     electricity: float
     water: float
     insurance: float
+    model_config = ConfigDict(from_attributes=True)
 class LoanDetails(BaseModel):
     loan_exists: bool
     loan_amount: Optional[float] = None
     monthly_payment: Optional[float] = None
     loan_term: Optional[int] = None
     interest_rate: Optional[float] = None
+    model_config = ConfigDict(from_attributes=True)
 class Lifestyle(BaseModel):
     smoke: bool
     dine_out_frequency: str
     sports_hobbies: str
+    model_config = ConfigDict(from_attributes=True)
 class FinancialGoals(BaseModel):
     goal: str
+    model_config = ConfigDict(from_attributes=True)
 class UserFinancialData(BaseModel):
     user_id: int
     monthly_income: float
-    expenses: Expenses
-    loan_details: LoanDetails
+    expenses: 'Expenses'  # assuming you've defined Expenses elsewhere
+    loan_details: 'LoanDetails'
     lifestyle: Lifestyle
     financial_goals: FinancialGoals
+    model_config = ConfigDict(from_attributes=True)
 
 @app.post("/financial_data")
 def submit_financial_data(data: UserFinancialData, db: Session = Depends(get_db)):
@@ -340,10 +264,7 @@ def submit_financial_data(data: UserFinancialData, db: Session = Depends(get_db)
     financial_goals = FinancialGoalsDB(user_id=user.id, **data.financial_goals.dict()) 
     db.add_all([expenses, loan_details, lifestyle, financial_goals])
     db.commit()
-    return {
-        "status": "1",
-        "message": "Financial data stored successfully",
-        "user_id": user.id,
+    return {"status": "1","message": "Financial data stored successfully","user_id": user.id,
         "financial_data": {
             "monthly_income": data.monthly_income,
             "expenses": data.expenses.dict(),
@@ -372,24 +293,12 @@ except FileNotFoundError as e:
     raise HTTPException(status_code=500, detail=str(e))
 # Column name mapping to match trained model
 COLUMN_MAPPING = {
-    "income": "Income",
-    "rent": "Rent",
-    "groceries": "Groceries",
-    "transportation": "Transportation",
-    "healthcare": "Healthcare",
-    "dining_out": "Dining_Out",
-    "shopping": "Shopping",
-    "personal_care": "Personal_Care",
-    "education": "Education",
-    "electricity": "Electricity",
-    "water": "Water",
-    "insurance": "Insurance",} 
-DB_CONFIG = {
-    "dbname": "ryze_api_db",
-    "user": "postgres",
-    "password": 'RGS@123',
-    "host": "172.31.10.201",
-    "port": "5432" }
+    "income": "Income","rent": "Rent","groceries": "Groceries","transportation": "Transportation",
+    "healthcare": "Healthcare","dining_out": "Dining_Out","shopping": "Shopping",
+    "personal_care": "Personal_Care","education": "Education",
+    "electricity": "Electricity","water": "Water","insurance": "Insurance",} 
+
+DB_CONFIG = {"dbname": "ryze_api_db","user": "postgres","password": 'RGS@123',"host": "172.31.10.201", "port": "5432" }
 # Fetch user data with correct column names
 def fetch_user_data(user_id: int, db: Session):
     try:
@@ -406,6 +315,8 @@ def analyze_spending(user_data):
     user_df = pd.DataFrame([user_data])
     user_df["Total Spending"] = user_df.drop(columns=["Income"]).sum(axis=1)
     user_df["Spending Percentage"] = (user_df["Total Spending"] / income) * 100
+    original_total_spending = user_df["Total Spending"][0]
+    original_spending_percentage = user_df["Spending Percentage"][0]
     try:
         user_df[['Income', 'Total Spending', 'Spending Percentage']] = scaler.transform(
             user_df[['Income', 'Total Spending', 'Spending Percentage']])
@@ -418,7 +329,6 @@ def analyze_spending(user_data):
     spending_categories = {k: v for k, v in user_data.items() if k != "Income"}
     highest_spending_category = max(spending_categories, key=spending_categories.get) # type: ignore
     spending_percentage = user_df['Spending Percentage'][0]
-
     if spending_percentage <= 75:
         status = "Good"
         advice = "You're managing your spending well. Keep up the good financial habits!"
@@ -436,14 +346,14 @@ def analyze_spending(user_data):
     return {
         "spending_analysis": {
             "status": status,
-            "description": f"You are spending {spending_percentage:.2f}% of your income.",
+            "description": f"You are spending {original_spending_percentage:.2f}% of your income.",
             "highest_spending_category": highest_spending_category,
             "advice": advice,
             "overspending_alerts": overspending_alerts,
             "spending_details": {
                 "Income": f"Your monthly income is ${income}. Consider allocating some to savings.",
-                "Total Spending": f"You have spent ${user_df['Total Spending'][0]:.2f} this month.",
-                "Spending Percentage": f"You are using {spending_percentage:.2f}% of your income.",
+                "Total Spending": f"You have spent ${original_total_spending:.2f} this month.",
+                "Spending Percentage": f"You are using {original_spending_percentage:.2f}% of your income.",
                 "Breakdown": {
                     "Essentials": {
                         "Rent": f"You spend ${user_data['Rent']} on rent, a significant expense.",
@@ -459,7 +369,6 @@ def analyze_spending(user_data):
                         "Shopping": f"Shopping costs are ${user_data['Shopping']}.",
                         "Personal Care": f"Personal care expenses are ${user_data['Personal_Care']}.",
                         "Education": f"Education costs amount to ${user_data['Education']}.", }}}}}
-
 @app.get("/predict_spending_behavior")
 def predict_spending_behavior(request: Spending_Request, db: Session = Depends(get_db)):
     try:
@@ -479,10 +388,7 @@ def view_profile(request: UserProfileRequest = Body(...), db: Session = Depends(
     if not user:
         return {"status": "0", "message": "User not found", "result": {}}
     return { "status": "1","message": "User profile fetched successfully",
-        "result": {
-            "user_name": user.user_name,
-            "email": user.email,
-            "mobile": user.mobile,
+        "result": { "user_name": user.user_name, "email": user.email,"mobile": user.mobile, "profile_image": user.profile_image,
             "created_at": str(user.created_at),
             "updated_at": str(user.updated_at),
             "expenses": [filter_out_id(e.__dict__) for e in user.expenses],
@@ -492,102 +398,150 @@ def view_profile(request: UserProfileRequest = Body(...), db: Session = Depends(
 def filter_out_id(data: dict) -> dict:
     return {k: v for k, v in data.items() if k != "id" and not k.startswith("_sa_")}
 
-class EditProfileRequest(BaseModel):
-    user_id: int
-    user_name: Optional[str] = None
-    email: Optional[str] = None
-    mobile: Optional[str] = None
-    expenses: Optional[List[Expenses]] = None
-    loan_details: Optional[List[LoanDetails]] = None
-    lifestyle: Optional[Lifestyle] = None
-    financial_goals: Optional[FinancialGoals] = None
-
 @app.post("/Edit_profile")
-def edit_profile(request: EditProfileRequest = Body(...), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == request.user_id).first()
+def edit_profile(
+    user_id: int = Form(...),
+    user_name: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    mobile: Optional[str] = Form(None),
+    profile_image: Optional[UploadFile] = File(None),
+    expenses: Optional[str] = Form(None),  
+    loan_details: Optional[str] = Form(None),  
+    lifestyle: Optional[str] = Form(None),  
+    financial_goals: Optional[str] = Form(None), 
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        return {"status": "0", "message": "User not found"}
-    # Update basic user info
-    if request.user_name:
-        user.user_name = request.user_name
-    if request.email:
-        user.email = request.email
-    if request.mobile:
-        user.mobile = request.mobile
-    # Replace old expenses with new
-    if request.expenses is not None:
-        db.query(ExpensesDB).filter(ExpensesDB.user_id == user.id).delete()
-        for exp in request.expenses:
-            db.add(ExpensesDB(user_id=user.id, **exp.dict()))
-    #  Replace old loan details with new
-    if request.loan_details is not None:
-        db.query(LoanDetailsDB).filter(LoanDetailsDB.user_id == user.id).delete()
-        for loan in request.loan_details:
-            db.add(LoanDetailsDB(user_id=user.id, **loan.dict()))
-    # Update or create lifestyle
-    if request.lifestyle:
-        if user.lifestyle:
-            for key, value in request.lifestyle.dict().items():
-                setattr(user.lifestyle, key, value)
-        else:
-            db.add(LifestyleDB(user_id=user.id, **request.lifestyle.dict()))
-    # Update or create financial goals
-    if request.financial_goals:
-        if user.financial_goals:
-            for key, value in request.financial_goals.dict().items():
-                setattr(user.financial_goals, key, value)
-        else:
-            db.add(FinancialGoalsDB(user_id=user.id, **request.financial_goals.dict()))
+        raise HTTPException(status_code=404, detail="User not found")
+    # Update basic fields
+    if user_name:
+        user.user_name = user_name
+    if email:
+        user.email = email
+    if mobile:
+        user.mobile = mobile
+    # Handle profile image upload
+    if profile_image:
+        image_path = os.path.join(MEDIA_DIR, profile_image.filename)
+        with open(image_path, "wb") as buffer:
+            shutil.copyfileobj(profile_image.file, buffer)
+        user.profile_image = profile_image.filename
+    # Update expenses
+    if expenses and expenses.strip() != "":
+        try:
+            exp_data = json.loads(expenses)
+            if isinstance(exp_data, list):
+                exp_list = [Expenses(**e) for e in exp_data]
+                db.query(ExpensesDB).filter(ExpensesDB.user_id == user_id).delete()
+                for exp in exp_list:
+                    db.add(ExpensesDB(user_id=user_id, **exp.dict()))
+            else:
+                raise HTTPException(status_code=400, detail="Expenses should be a list")
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON in expenses: {e}")
+    # Update loan details
+    if loan_details:
+        try:
+            loan_list = [LoanDetails(**l) for l in json.loads(loan_details)]
+            db.query(LoanDetailsDB).filter(LoanDetailsDB.user_id == user_id).delete()
+            for loan in loan_list:
+                db.add(LoanDetailsDB(user_id=user_id, **loan.dict()))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid loan details: {e}")
+    # Update lifestyle
+    if lifestyle:
+        try:
+            life_data = Lifestyle(**json.loads(lifestyle))
+            if user.lifestyle:
+                for key, value in life_data.dict().items():
+                    setattr(user.lifestyle, key, value)
+            else:
+                db.add(LifestyleDB(user_id=user_id, **life_data.dict()))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid lifestyle data: {e}")
+    # Update financial goals
+    if financial_goals:
+        try:
+            goal_data = FinancialGoals(**json.loads(financial_goals))
+            if user.financial_goals:
+                for key, value in goal_data.dict().items():
+                    setattr(user.financial_goals, key, value)
+            else:
+                db.add(FinancialGoalsDB(user_id=user_id, **goal_data.dict()))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid financial goals data: {e}") 
     db.commit()
-
     return {"status": "1", "message": "User profile updated successfully"}
-# DashBoard api 
+
+class CategoryStats(BaseModel):
+    category: str
+    total: float
+    model_config = ConfigDict(from_attributes=True)
+class CategoryStat(BaseModel):
+    category: str
+    total: float  
+    model_config = ConfigDict(from_attributes=True)
+class MonthlyTrend(BaseModel):
+    month: str
+    total: float
+    model_config = ConfigDict(from_attributes=True)
+class MonthlyExpenseTrend(BaseModel):
+    month: str
+    total: float  
+    model_config = ConfigDict(from_attributes=True)
 class DashboardResponse(BaseModel):
-    income: float
     total_spending: float
     spending_percentage: float
     expenses_breakdown: Dict[str, float]
+    category_stats: List[CategoryStats]
+    monthly_trend: List[MonthlyTrend]
     loan_details: Optional[LoanDetails]
     lifestyle: Optional[Lifestyle]
     financial_goals: Optional[FinancialGoals]
-
-@app.post("/dashboard")
-def get_user_dashboard(request=DashboardResponse,db: Session = Depends(get_db),
-    current_user: User = Depends(get_db)):
-    # Get expenses
-    expense_record = db.query(ExpensesDB).filter(ExpensesDB.user_id == request.id).first()
-    if not expense_record:
-        raise HTTPException(status_code=404, detail="User expenses not found")
-    # Calculate total spending and breakdown
-    expense_fields = [
+    model_config = ConfigDict(from_attributes=True)
+def get_current_user(user_id: int, db: Session = Depends(get_db)) -> User:
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user    
+@app.post("/dashboard", response_model=DashboardResponse)
+def get_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Get user expenses
+    expense = db.query(ExpensesDB).filter_by(user_id=current_user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expenses not found")
+    # Calculate total and category breakdown
+    fields = [
         "rent", "groceries", "transportation", "healthcare", "dining_out",
         "shopping", "personal_care", "education", "electricity", "water", "insurance"]
-    
-    expenses_breakdown: Dict[str, float] = {}
-    total_spending = 0
-
-    for field in expense_fields:
-        value = getattr(expense_record, field) or 0
-        expenses_breakdown[field] = value
-        total_spending += value
-
-    income = expense_record.income or 0
-    spending_percentage = round((total_spending / income) * 100, 2) if income > 0 else 0
-    # Get loan details
-    loan_record = db.query(LoanDetailsDB).filter(LoanDetailsDB.user_id == current_user.id).first()
-    # Get lifestyle
-    lifestyle_record = db.query(LifestyleDB).filter(LifestyleDB.user_id == current_user.id).first()
-    # Get financial goals
-    goals_record = db.query(FinancialGoalsDB).filter(FinancialGoalsDB.user_id == current_user.id).first()
-
+    breakdown = {}
+    total = 0
+    for field in fields:
+        val = getattr(expense, field, 0) or 0
+        breakdown[field] = val
+        total += val
+    income = expense.income or 0
+    spending_percent = round((total / income) * 100, 2) if income else 0
+    category_stats = [
+        CategoryStat(category=key, total=value)
+        for key, value in breakdown.items() ]
+    monthly_trend = [
+        MonthlyExpenseTrend(month=month, total=0.0)
+        for month in ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]]
+    # Get additional info
+    loan = db.query(LoanDetailsDB).filter_by(user_id=current_user.id).first()
+    lifestyle = db.query(LifestyleDB).filter_by(user_id=current_user.id).first()
+    goals = db.query(FinancialGoalsDB).filter_by(user_id=current_user.id).first()
     return DashboardResponse(
-        income=income,
-        total_spending=total_spending,
-        spending_percentage=spending_percentage,
-        expenses_breakdown=expenses_breakdown,
-        loan_details=loan_record,
-        lifestyle=lifestyle_record,
-        financial_goals=goals_record)
+        total_spending=total,
+        spending_percentage=spending_percent,
+        expenses_breakdown=breakdown,
+        category_stats=category_stats,  # already Pydantic
+        monthly_trend=monthly_trend,    # already Pydantic
+        loan_details=LoanDetails.from_orm(loan) if loan else None,
+        lifestyle=Lifestyle.from_orm(lifestyle) if lifestyle else None,
+        financial_goals=FinancialGoals.from_orm(goals) if goals else None)     
 # #END Get
 if __name__ == "__main__":
     import uvicorn
