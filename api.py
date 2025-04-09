@@ -413,7 +413,7 @@ def edit_profile(
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return {"status":"0","message":"User not found","results":{}}
     # Update basic fields
     if user_name:
         user.user_name = user_name
@@ -437,9 +437,9 @@ def edit_profile(
                 for exp in exp_list:
                     db.add(ExpensesDB(user_id=user_id, **exp.dict()))
             else:
-                raise HTTPException(status_code=400, detail="Expenses should be a list")
+                return {"status":"0","message":"Expenses should be a list","results":{e}}
         except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON in expenses: {e}")
+            return {"status":"0","message":"Invalid JSON in Expenses","results":{}}
     # Update loan details
     if loan_details:
         try:
@@ -448,7 +448,7 @@ def edit_profile(
             for loan in loan_list:
                 db.add(LoanDetailsDB(user_id=user_id, **loan.dict()))
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid loan details: {e}")
+            return {"status":"0","message":"Invalid loan details","results":{}}
     # Update lifestyle
     if lifestyle:
         try:
@@ -459,7 +459,7 @@ def edit_profile(
             else:
                 db.add(LifestyleDB(user_id=user_id, **life_data.dict()))
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid lifestyle data: {e}")
+            return {"status":"0","message":"Invalid lifestyle data","results":{}}
     # Update financial goals
     if financial_goals:
         try:
@@ -470,7 +470,7 @@ def edit_profile(
             else:
                 db.add(FinancialGoalsDB(user_id=user_id, **goal_data.dict()))
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid financial goals data: {e}") 
+            return {"status":"0","message":"Invallid financial goals data","results":{}} 
     db.commit()
     return {"status": "1", "message": "User profile updated successfully"}
 
@@ -503,14 +503,14 @@ class DashboardResponse(BaseModel):
 def get_current_user(user_id: int, db: Session = Depends(get_db)) -> User:
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return {"status":"0","message":"User not found","results":{}}
     return user    
 @app.post("/dashboard", response_model=DashboardResponse)
 def get_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # Get user expenses
     expense = db.query(ExpensesDB).filter_by(user_id=current_user.id).first()
     if not expense:
-        raise HTTPException(status_code=404, detail="Expenses not found")
+        return {"status":"0","message":"Expenses not found","results":{}}
     # Calculate total and category breakdown
     fields = [
         "rent", "groceries", "transportation", "healthcare", "dining_out",
@@ -537,8 +537,8 @@ def get_dashboard(db: Session = Depends(get_db), current_user: User = Depends(ge
         total_spending=total,
         spending_percentage=spending_percent,
         expenses_breakdown=breakdown,
-        category_stats=category_stats,  # already Pydantic
-        monthly_trend=monthly_trend,    # already Pydantic
+        category_stats=category_stats, 
+        monthly_trend=monthly_trend,  
         loan_details=LoanDetails.from_orm(loan) if loan else None,
         lifestyle=Lifestyle.from_orm(lifestyle) if lifestyle else None,
         financial_goals=FinancialGoals.from_orm(goals) if goals else None)     
