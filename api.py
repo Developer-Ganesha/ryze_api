@@ -89,6 +89,10 @@ class FinancialGoalsDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     goal = Column(String)
+    goal_title = Column(String)
+    amount = Column(String)
+    current_amount =Column(String)
+    deadline = Column(String)
     user = relationship("User", back_populates="financial_goals")
 #
 Base.metadata.create_all(bind=engine) 
@@ -514,6 +518,7 @@ class MonthlyExpenseTrend(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 class DashboardResponse(BaseModel):
     total_spending: float
+    income : float
     spending_percentage: float
     expenses_breakdown: Dict[str, float]
     category_stats: List[CategoryStats]
@@ -568,6 +573,7 @@ def get_dashboard(data: DashboardRequest, db: Session = Depends(get_db)):
 
     return DashboardResponse(
         total_spending=total,
+        income=income,
         spending_percentage=spending_percent,
         expenses_breakdown=breakdown,
         category_stats=category_stats,
@@ -575,8 +581,46 @@ def get_dashboard(data: DashboardRequest, db: Session = Depends(get_db)):
         loan_details=LoanDetails.from_orm(loan) if loan else None,
         lifestyle=Lifestyle.from_orm(lifestyle) if lifestyle else None,
         financial_goals=FinancialGoals.from_orm(goals) if goals else None
-    )    
-# #END Get
+    )  
+class GoalCreate(BaseModel):
+    user_id: int
+    goal_title: str
+    amount: str
+    current_amount: str
+    deadline: str  
+@app.post("/add_new_goal")
+def add_goal(request: GoalCreate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        return {"status":"0","message":"User not found","results":{}}
+    new_goal = FinancialGoalsDB(
+        user_id=request.user_id,
+        goal_title=request.goal_title,
+        amount=request.amount,
+        current_amount=request.current_amount,
+        deadline=request.deadline)
+    db.add(new_goal)
+    db.commit()
+    db.refresh(new_goal)
+    return {"status":"1","message": "Goal added successfully", "results": {
+        "goal_title": new_goal.goal_title,
+        "amount": new_goal.amount,
+        "current_amount": new_goal.current_amount,
+        "deadline": new_goal.deadline }}
+class UserIDRequest(BaseModel):
+    user_id: int    
+@app.post("/all_goals")
+def all_goals(request: UserIDRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        return {"status": "0", "message": "User not found", "results": []}
+    goals = db.query(FinancialGoalsDB).filter(FinancialGoalsDB.user_id == request.user_id).all()
+    results = [ {"goal_title": g.goal_title,"amount": g.amount,"current_amount": g.current_amount,"deadline": g.deadline}
+        for g in goals]
+    return {
+        "status": "1",
+        "message": "Goals fetched successfully",
+        "results": results}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")
