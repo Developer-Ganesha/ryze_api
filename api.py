@@ -71,7 +71,7 @@ class LoanDetailsDB(Base):
     monthly_payment = Column(Float, nullable=True)
     loan_term = Column(Integer, nullable=True)
     interest_rate = Column(Float, nullable=True)
-    amount = Column(Float)
+    # amount = Column(Float)
     interest_rate = Column(Float)
     user = relationship("User", back_populates="loan_details")
 #
@@ -204,15 +204,16 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
         "created_at": str(user.created_at) if user.created_at else "",
         "device_id": "null",# "status": "ACTIVE",
         "country": "","otp": "9999","city": "", "district": "","qr_image": "", "qr_code": "",  "point": "0"},"status": "1"}
-    
-@app.delete("/users/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id).first()
+class DeleteUserRequest(BaseModel):
+    user_id: int
+@app.delete("/Delete")
+def delete_user(data: DeleteUserRequest = Body(...), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == data.user_id).first()
     if not user:
-        return {"status":"0","message":"User not found"}
+        return {"status": "0", "message": "User not found"}
     db.delete(user)
     db.commit()
-    return {"status":"1","message": f"User with id {user_id} deleted successfully"}
+    return {"status": "1", "message": f"User with id {data.user_id} deleted successfully"}    
     
 class Expenses(BaseModel):
     income: float
@@ -271,12 +272,15 @@ def submit_financial_data(data: UserFinancialData, db: Session = Depends(get_db)
             "loan_details": data.loan_details.dict(),
             "lifestyle": data.lifestyle.dict(),
             "financial_goals": data.financial_goals.dict()} }
+
+    
 #Get method
 DB_PATH = "ryze_api_db"
 iso_forest = IsolationForest()
 
 MODEL_PATH = "E:\\RYZE_API\\model\\isolation_forest.pkl"
 SCALER_PATH = "E:\\RYZE_API\\model\\scaler.pkl"
+
 
 with open("isolation_forest.pkl", "wb") as f:
     pickle.dump(iso_forest, f)
@@ -292,13 +296,25 @@ try:
 except FileNotFoundError as e:
     raise HTTPException(status_code=500, detail=str(e))
 # Column name mapping to match trained model
-COLUMN_MAPPING = {
-    "income": "Income","rent": "Rent","groceries": "Groceries","transportation": "Transportation",
-    "healthcare": "Healthcare","dining_out": "Dining_Out","shopping": "Shopping",
-    "personal_care": "Personal_Care","education": "Education",
-    "electricity": "Electricity","water": "Water","insurance": "Insurance",} 
 
-DB_CONFIG = {"dbname": "ryze_api_db","user": "postgres","password": 'RGS@123',"host": "172.31.10.201", "port": "5432" }
+COLUMN_MAPPING = {
+    "income": "Income",
+    "rent": "Rent",
+    "groceries": "Groceries",
+    "transportation": "Transportation",
+    "healthcare": "Healthcare",
+    "dining_out": "Dining_Out",
+    "shopping": "Shopping",
+    "personal_care": "Personal_Care",
+    "education": "Education",
+    "electricity": "Electricity",
+    "water": "Water",
+    "insurance": "Insurance",}
+DB_CONFIG = {
+    "dbname": "ryze_api_db",
+    "user": "postgres",
+    "password": 'RGS@123', "host": "172.31.10.201",
+    "port": "5432" }
 # Fetch user data with correct column names
 def fetch_user_data(user_id: int, db: Session):
     try:
@@ -329,6 +345,7 @@ def analyze_spending(user_data):
     spending_categories = {k: v for k, v in user_data.items() if k != "Income"}
     highest_spending_category = max(spending_categories, key=spending_categories.get) # type: ignore
     spending_percentage = user_df['Spending Percentage'][0]
+
     if spending_percentage <= 75:
         status = "Good"
         advice = "You're managing your spending well. Keep up the good financial habits!"
@@ -353,7 +370,7 @@ def analyze_spending(user_data):
             "spending_details": {
                 "Income": f"Your monthly income is ${income}. Consider allocating some to savings.",
                 "Total Spending": f"You have spent ${original_total_spending:.2f} this month.",
-                "Spending Percentage": f"You are using {original_spending_percentage:.2f}% of your income.",
+                 "Spending Percentage": f"You are using {original_spending_percentage:.2f}% of your income.",
                 "Breakdown": {
                     "Essentials": {
                         "Rent": f"You spend ${user_data['Rent']} on rent, a significant expense.",
@@ -369,6 +386,10 @@ def analyze_spending(user_data):
                         "Shopping": f"Shopping costs are ${user_data['Shopping']}.",
                         "Personal Care": f"Personal care expenses are ${user_data['Personal_Care']}.",
                         "Education": f"Education costs amount to ${user_data['Education']}.", }}}}}
+        
+    
+class Spending_Request(BaseModel):
+    user_id: int
 @app.get("/predict_spending_behavior")
 def predict_spending_behavior(request: Spending_Request, db: Session = Depends(get_db)):
     try:
@@ -473,7 +494,8 @@ def edit_profile(
             return {"status":"0","message":"Invallid financial goals data","results":{}} 
     db.commit()
     return {"status": "1", "message": "User profile updated successfully"}
-
+class DashboardRequest(BaseModel):
+    user_id: int
 class CategoryStats(BaseModel):
     category: str
     total: float
@@ -506,42 +528,54 @@ def get_current_user(user_id: int, db: Session = Depends(get_db)) -> User:
         return {"status":"0","message":"User not found","results":{}}
     return user    
 @app.post("/dashboard", response_model=DashboardResponse)
-def get_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Get user expenses
-    expense = db.query(ExpensesDB).filter_by(user_id=current_user.id).first()
+def get_dashboard(data: DashboardRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == data.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    expense = db.query(ExpensesDB).filter_by(user_id=user.id).first()
     if not expense:
-        return {"status":"0","message":"Expenses not found","results":{}}
-    # Calculate total and category breakdown
+        raise HTTPException(status_code=404, detail="Expenses not found")
+
     fields = [
         "rent", "groceries", "transportation", "healthcare", "dining_out",
         "shopping", "personal_care", "education", "electricity", "water", "insurance"]
+    
     breakdown = {}
     total = 0
     for field in fields:
         val = getattr(expense, field, 0) or 0
         breakdown[field] = val
         total += val
+
     income = expense.income or 0
     spending_percent = round((total / income) * 100, 2) if income else 0
+
     category_stats = [
         CategoryStat(category=key, total=value)
-        for key, value in breakdown.items() ]
+        for key, value in breakdown.items()
+    ]
+
     monthly_trend = [
         MonthlyExpenseTrend(month=month, total=0.0)
-        for month in ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]]
-    # Get additional info
-    loan = db.query(LoanDetailsDB).filter_by(user_id=current_user.id).first()
-    lifestyle = db.query(LifestyleDB).filter_by(user_id=current_user.id).first()
-    goals = db.query(FinancialGoalsDB).filter_by(user_id=current_user.id).first()
+        for month in ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    ]
+
+    loan = db.query(LoanDetailsDB).filter_by(user_id=user.id).first()
+    lifestyle = db.query(LifestyleDB).filter_by(user_id=user.id).first()
+    goals = db.query(FinancialGoalsDB).filter_by(user_id=user.id).first()
+
     return DashboardResponse(
         total_spending=total,
         spending_percentage=spending_percent,
         expenses_breakdown=breakdown,
-        category_stats=category_stats, 
-        monthly_trend=monthly_trend,  
+        category_stats=category_stats,
+        monthly_trend=monthly_trend,
         loan_details=LoanDetails.from_orm(loan) if loan else None,
         lifestyle=Lifestyle.from_orm(lifestyle) if lifestyle else None,
-        financial_goals=FinancialGoals.from_orm(goals) if goals else None)     
+        financial_goals=FinancialGoals.from_orm(goals) if goals else None
+    )    
 # #END Get
 if __name__ == "__main__":
     import uvicorn
