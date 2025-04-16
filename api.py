@@ -67,12 +67,17 @@ class LoanDetailsDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     loan_exists = Column(Boolean)
+    loan_number = Column(String, unique=True, index=True)  
+    loan_type = Column(String)
+    start_date = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
     loan_amount = Column(Float, nullable=True)
     monthly_payment = Column(Float, nullable=True)
     loan_term = Column(Integer, nullable=True)
     interest_rate = Column(Float, nullable=True)
-    # amount = Column(Float)
     interest_rate = Column(Float)
+    status = Column(String(50), default="active", nullable=True)
     user = relationship("User", back_populates="loan_details")
 #
 class LifestyleDB(Base):
@@ -276,7 +281,6 @@ def submit_financial_data(data: UserFinancialData, db: Session = Depends(get_db)
             "loan_details": data.loan_details.dict(),
             "lifestyle": data.lifestyle.dict(),
             "financial_goals": data.financial_goals.dict()} }
-
     
 #Get method
 DB_PATH = "ryze_api_db"
@@ -621,6 +625,168 @@ def all_goals(request: UserIDRequest, db: Session = Depends(get_db)):
         "status": "1",
         "message": "Goals fetched successfully",
         "results": results}
+###################################################################
+import joblib
+import numpy as np
+import ollama
+# Load the model
+try:
+    model = joblib.load("model/savings_predictor_model.pkl")
+except Exception as e:
+    print("Failed to load model:", e)
+    raise e
+# Request schema
+class FinancialData(BaseModel):
+    user_id : int
+    income: float
+    rent: float
+    groceries: float
+    transportation: float
+    healthcare: float
+    food: float
+    shopping: float
+    personal_care: float
+    education: float
+    electricity: float
+    water: float
+    insurance: float
+    loan_exists: bool
+    loan_amount: float
+    monthly_emi: float
+    loan_term_years: float
+    interest_rate: float
+    smoke: bool
+    dine_out_freq: str
+    hobbies: str
+    goal: str
+    goal_amount: float
+    goal_timeframe: int
+
+
+def build_prompt(data: FinancialData, savings: float) -> str:
+    return f"""
+You are a smart financial assistant.
+
+The user has the following financial goal:
+- Goal type: {data.goal}
+- Target amount: ₹{data.goal_amount}
+- Timeframe: {data.goal_timeframe} years
+
+Their predicted monthly savings is ₹{savings:.0f}.
+
+Other details:
+- Monthly income: ₹{data.income}
+- Expenses: rent ₹{data.rent}, groceries ₹{data.groceries}, food ₹{data.food}, transportation ₹{data.transportation}, healthcare ₹{data.healthcare}
+- Loan: Exists: {"Yes" if data.loan_exists else "No"}, Amount: ₹{data.loan_amount}, EMI: ₹{data.monthly_emi}, Interest rate: {data.interest_rate}%
+- Lifestyle: Smokes: {"Yes" if data.smoke else "No"}, Dines out: {data.dine_out_freq}, Hobbies: {data.hobbies}
+
+Please provide:
+- Whether the goal is achievable or not
+- A savings plan (monthly)
+"""
+def get_mistral_response(prompt: str) -> str:
+    try:
+        response = ollama.chat(model='mistral', messages=[
+            {"role": "system", "content": "You are a helpful financial advisor."},
+            {"role": "user", "content": prompt}])
+        return response['message']['content']
+    except Exception as e:
+        return f"❌ Mistral error: {e}"
+
+@app.post("/predict_savings/")
+def predict_savings(request: FinancialData, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        return {"status": "0", "message": "User not found", "results": []}
+    try:
+        loan_exists = 1 if request.loan_exists else 0
+        smoke = 1 if request.smoke else 0
+        X = np.array([[  # Must match model training order
+            request.income, request.rent, request.groceries, request.transportation,
+            request.healthcare, request.food, request.shopping, request.personal_care,
+            request.education, request.electricity, request.water, request.insurance,
+            request.loan_amount, request.monthly_emi, request.loan_term_years,
+            request.interest_rate, smoke]])
+        predicted_savings = model.predict(X)[0]
+        prompt = build_prompt(request, predicted_savings)
+        insight = get_mistral_response(prompt)
+        return {
+            "predicted_monthly_savings": round(predicted_savings, 2),"ai_insight": insight  }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction error: {e}")
+    #######
+class LoanResponse(BaseModel):
+    user_id: int
+    loan_number: str
+    loan_type: str
+    loan_amount: float
+    monthly_payment: float
+    loan_term: int
+    interest_rate: float
+    start_date: datetime
+    status: str
+    created_at: datetime
+    updated_at: datetime    
+@app.post("/add_new_loan")
+def add_loan(request: LoanResponse, db: Session = Depends(get_db)):
+    # Check if the user exists
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        return {"status": "0", "message": "User not found", "results": {}}
+    # Generate loan number (e.g., LN0001)
+    last_loan = db.query(LoanDetailsDB).order_by(LoanDetailsDB.id.desc()).first()
+    next_id = (last_loan.id + 1) if last_loan else 1
+    
+    # Create and store new loan
+    new_loan = LoanDetailsDB(
+        user_id=request.user_id, 
+        loan_number=request.loan_number,
+        loan_type=request.loan_type,
+        loan_amount=request.loan_amount,
+        monthly_payment=request.monthly_payment,
+        loan_term=request.loan_term,
+        interest_rate=8.5,  # default interest
+        start_date=datetime.utcnow(),
+        status="active",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow())
+    db.add(new_loan)
+    db.commit()
+    db.refresh(new_loan)
+    return {
+        "status": "1",
+        "message": "Loan added successfully",
+        "results": {
+            "loan_number": new_loan.loan_number,
+            "loan_type": new_loan.loan_type,
+            "loan_amount": new_loan.loan_amount,
+            "monthly_payment": new_loan.monthly_payment,
+            "loan_term": new_loan.loan_term,
+            "interest_rate": new_loan.interest_rate,
+            "start_date": new_loan.start_date,
+            "status": new_loan.status }}
+class LoanIDRequest(BaseModel):
+    user_id: int
+@app.post("/all_loans")
+def all_loans(request: LoanIDRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        return {"status": "0", "message": "User not found", "results": {}}
+    loans = db.query(LoanDetailsDB).filter(LoanDetailsDB.user_id == request.user_id).all()
+    results = [
+        {
+            "loan_number": loan.loan_number,
+            "loan_type": loan.loan_type,
+            "loan_amount": loan.loan_amount,
+            "monthly_payment": loan.monthly_payment,
+            "loan_term": loan.loan_term,
+            "interest_rate": loan.interest_rate,
+            "start_date": loan.start_date,
+            "status": loan.status } for loan in loans]
+    return {
+        "status": "1",
+        "message": "Loans fetched successfully",
+        "results": results }
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
